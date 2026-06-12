@@ -34,6 +34,7 @@ A personal knowledge base for engineering growth, architecture thinking, and con
 
 ### Architecture Patterns
 - [AWS Reference](./architecture-patterns/aws-reference.md)
+- [Azure Reference](./architecture-patterns/azure-reference.md)
 - [Clean Architecture](./architecture-patterns/clean-architecture.md)
 
 ### Languages & Frameworks
