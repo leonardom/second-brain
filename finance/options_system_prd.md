@@ -91,3 +91,12 @@ The output console or local web app (e.g., Streamlit) must explicitly present:
 *   [ ] **Parsing Accuracy:** 100% precision validating extracted numerical fields (Strike, Expiration, Spot Price) against raw webpage values.
 *   [ ] **Latency Rule:** Strategy filtering matrix execution takes under 1.5 seconds per complete option chain once local data tables are hydrated.
 *   [ ] **Simulation Safety:** System correctly generates 0-dollar simulated tracking statements during its mandatory 90-day sandbox trial.
+
+
+### OpLab Main Functions
+
+* Simulador de Estratégias: Permite testar cenários de preço, tempo e volatilidade, visualizar o gráfico de payoff e exportar ordens.
+* Explorador de Oportunidades: Oferece mais de 30 estratégias pré-configuradas para aplicação em tempo real.
+* Monitor de Mercado: Analisa o mercado por ativos ou por mapas de calor de volatilidade, volume e variação.
+* Rankings: Lista ações e opções ranqueadas por indicadores técnicos, fundamentalistas, liquidez e volume.
+* Calculadora Black & Scholes: Calcula o preço de qualquer opção (listada ou não) de maneira unitária ou em lote.
