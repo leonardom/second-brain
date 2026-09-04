@@ -442,10 +442,10 @@ Para proteger esse ambiente, você configuraria os NSGs assim:
 # 9. Máquinas Virtuais
 
 Recursos normalmente criados:
-- NIC
+- NIC (Network Interface Card)
 - Disco
 - NSG
-- IP Público (opcional)
+- IP Público (PIP) (opcional)
 
 ---
 
