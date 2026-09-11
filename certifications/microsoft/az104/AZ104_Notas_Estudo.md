@@ -40,15 +40,41 @@ A AZ-104 é uma certificação prática focada na administração do Azure. É f
 - Inclusions: Bundled within Microsoft 365 E5 or available as a standalone license.
 
 ## SSPR (Self-Service Password Reset)
-Acesso:
+
+### Scope of SSPR rollout:
 - None
 - Selected (Groups)
 - All
 
-Métodos recomendados:
+### Métodos recomendados:
 - Microsoft Authenticator
 - E-mail alternativo
 - Telefone
+
+### Require the minimum number of authentication methods:
+- You can specify the minimum number of methods that the user must set up, either one or two. For example, you might enable the mobile app code, email, office phone, and security questions methods and specify a minimum of two methods. Users can then choose the two methods they prefer, like mobile app code and email.
+
+Accounts associated with administrator roles
+- A strong, two-method authentication policy is always applied to accounts with an administrator role, regardless of your configuration for other users.
+
+### Configure notifications
+
+Administrators can choose how users are notified of password changes. There are two options you can enable:
+
+Notify users on password resets: 
+- The user who resets their own password is notified to their primary and secondary email addresses. If the reset was done by a malicious user, this notification alerts the user, who can take mitigation steps.
+- Notify all admins when other admins reset their password: All administrators are notified when another administrator resets their password.
+
+### License Requirement
+
+In this case, you can use SSPR in Microsoft Entra ID P1 or P2. It's also available with Microsoft 365 Apps for business or Microsoft 365.
+
+### SSPR deployment options
+
+- You can deploy SSPR with password writeback by using Microsoft Entra Connect or cloud sync, depending on user needs. 
+- You can deploy each option side-by-side in different domains to target different sets of users. This helps existing users on-premises to write back password changes, while adding an option for users in disconnected domains because of a company merger or split. 
+- Users from an existing on-premises domain can use Microsoft Entra Connect, while new users from a merger can use cloud sync in another domain.
+- Cloud sync can also provide higher availability, because it doesn't rely on a single instance of Microsoft Entra Connect. For a feature comparison between the two deployment options, see Comparison between Microsoft Entra Connect and cloud sync.
 
 ---
 
@@ -174,6 +200,70 @@ RBAC pode ser adicionados:
 O gerenciamento de acessos é dividido em duas camadas distintas, embora integradas:
 - Funções do Entra ID: Controlam o gerenciamento do próprio diretório (criar usuários, resetar senhas, gerenciar domínios). Exemplos: Global Administrator, User Administrator.
 - Funções do Azure (Azure RBAC): Controlam o gerenciamento dos recursos dentro da assinatura (criar máquinas virtuais, bancos de dados, redes). Os usuários do Entra ID recebem essas permissões. Exemplos: Owner, Contributor, Reader.
+
+### Security principal (who)
+
+A security principal is just a fancy name for a user, group, or application to which you want to grant access.
+
+Can be:
+- User
+- Group
+- Service Principal
+
+### Role definition (what)
+
+A role definition is a collection of permissions. It's sometimes just called a role. A role definition lists the permissions the role can perform such as read, write, and delete. Roles can be high-level, like Owner, or specific, like Virtual Machine Contributor.
+
+```json
+Contributor:
+
+{
+      "Actions": [ "*" ],
+      "NotActions": [
+            "Auth/*/Delete",
+            "Auth/*/Write",
+            "Auth/elevateAccess/action"
+      ],
+      "DataActions": [],
+      "NotDataActions": [],
+      "AssignedScopes": [
+            "/"
+      ]
+}
+```
+
+Built-in:
+- Owner
+- Contributor
+- Reader
+- Backup Operator
+- Security Reader
+- User Access Administrator
+- Virtual Machine Contributor
+
+Custom (examples):
+- Reader Support Tickets
+- Virtual Machine Operator
+
+### Scope (where)
+
+Scope is the level where the access applies. This is helpful if you want to make someone a Website Contributor but only for one resource group.
+
+### Role assignment
+
+Once you have determined the who, what, and where, you can combine those elements to grant access. A role assignment is the process of binding a role to a security principal at a particular scope for the purpose of granting access. To grant access, you'll create a role assignment. To revoke access, you'll remove a role assignment.
+
+### Azure RBAC is an allow model
+
+Azure RBAC is an allow model. This means that when you're assigned a role, Azure RBAC allows you to perform certain actions such as read, write, or delete. If one role assignment grants you read permissions to a resource group, and a different role assignment grants you write permissions to the same resource group, then you'll have read and write permissions on that resource group.
+
+Azure RBAC has something called `NotActions` permissions. You can use `NotActions` to create a set of not allowed permissions. The access a role grants—the effective permissions—is computed by subtracting the `NotActions` operations from the `Actions` operations. For example, the Contributor role has both `Actions` and `NotActions`. The wildcard (*) in `Actions` indicates that it can perform all operations on the control plane. You'd then subtract the following operations in `NotActions` to compute the effective permissions:
+
+- Delete roles and role assignments
+- Create roles and role assignments
+- Grant the caller User Access Administrator access at the tenant scope
+- Create or update any blueprint artifacts
+- Delete any blueprint artifacts
 
 ---
 
@@ -497,6 +587,22 @@ AzureBastionSubnet
 ---
 
 # 14. Blob Storage
+
+Azure Blob Storage is a service that stores unstructured data in the cloud as objects or blobs. Blob stands for Binary Large Object. Blob Storage is also referred to as object storage or container storage.
+
+```text
+Storage Account  | Container    | Blob
+                 |              |
+              +--| Pictures-+---| image1.jpg
+              |  |          |   |
+              |  |          +---| image2.jpg
+Production ---+  |              |
+              |  |              |
+              |  |              |
+              +--| Movies---+---| movie2.avi
+                 |          |   |
+                 |          +---| movie1.avi
+```
 
 ## Access Tiers
 - Hot
