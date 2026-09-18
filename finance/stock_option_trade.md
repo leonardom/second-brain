@@ -512,3 +512,301 @@ def analyze_market_regime(ticker_symbol):
         print(f"⏭️ SKIPPING {ticker_symbol}: Avoid selling options premium right before a binary volatility event.")
         return
 ```
+
+# 🔔 Telegram Notification
+
+To send these alerts straight to your phone via Telegram, you will use a custom Telegram Bot. This allows the Python script to run silently on your machine or cloud server and instant-message you the exact option leg details only when a valid strategy trigger occurs.
+
+### 🛠️ Step 1: Set Up Your Telegram Bot
+
+Before changing your script, you need to create a bot and get your private keys:
+
+1. Open Telegram and search for the user @BotFather.
+2. Send the message /newbot and follow the prompts to give your bot a name and username.
+3. Save the HTTP API Token provided by BotFather (it looks like 123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ).
+4. Search for your newly created bot in Telegram and click Start / Send a message (this initializes the chat link).
+5. To get your personal chat ID, search for @userinfobot in Telegram and send it a message. It will reply with your numeric Id (e.g., 987654321).
+
+### 💻 Step 2: Add new method to send Telegram alert:
+
+```python
+# ----------------------------------------------------
+# TELEGRAM CONFIGURATION
+# ----------------------------------------------------
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"      # Paste token from BotFather
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"      # Paste ID from userinfobot
+
+def send_telegram_alert(message):
+    """Sends a formatted markdown text message directly to your Telegram chat."""
+    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("📲 Telegram alert dispatched successfully!")
+        else:
+            print(f"⚠️ Telegram send failed: {response.text}")
+    except Exception as e:
+        print(f"❌ Error sending Telegram message: {e}")
+```
+
+### ⌨️ Step 3: Change method `build_option_legs` to create the message body and send to Telegram
+
+```python
+    # Format the base Telegram alert header
+    alert_msg = f"🎯 *TRADE SIGNAL: {strategy}*\n"
+    alert_msg += f"📈 *Asset:* {ticker_symbol} | *Price:* ${current_price:.2f}\n"
+    alert_msg += f"📊 *IV Rank:* {iv_rank:.1f} | *Exp:* {target_exp.expiration_date} ({target_exp.days_to_expiration} DTE)\n"
+    alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+
+    if strategy == "BULL_PUT":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc[0]
+        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - 5.0)].iloc[0]
+        
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+        alert_msg += f"💳 *Margin Required:* ${int(short_put['strike'] - long_put['strike']) * 100}"
+
+    elif strategy == "BEAR_CALL":
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc[0]
+        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + 5.0)].iloc[0]
+        
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+        alert_msg += f"💳 *Margin Required:* ${int(long_call['strike'] - short_call['strike']) * 100}"
+
+    elif strategy == "IRON_CONDOR":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc[0]
+        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - 5.0)].iloc[0]
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc[0]
+        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + 5.0)].iloc[0]
+        
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+        alert_msg += f" ─── Wings ───\n"
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+        alert_msg += f"💳 *Max Risk:* ${int(short_call['strike'] - long_call['strike']) * 100}"
+
+    # Push to phone
+    send_telegram_alert(alert_msg)
+```
+
+## 📱 What the Output Looks Like on Your Phone
+
+When a stock triggers the execution parameters, the terminal remains quiet, and your phone will instantly buzz with a clean, Markdown-formatted push alert:
+
+```text
+🎯 TRADE SIGNAL: BULL_PUT
+📈 Asset: AAPL | Price: $227.40
+📊 IV Rank: 34.2 | Exp: 2026-10-23 (38 DTE)
+━━━━━━━━━━━━━━━━━━━━
+🟢 SELL: $215.00 Put (Δ 0.15)
+🔴 BUY: $210.00 Put (Δ 0.08)
+💳 Margin Required: $500
+```
+
+# 💻 Production Engine with Live Pricing & Risk Filtering
+
+```python
+import yfinance as yf
+import pandas as pd
+import pandas_ta as ta
+import requests
+from datetime import datetime, timedelta, timezone
+from tastytrade import ProductionSession
+from tastytrade.metrics import get_market_metrics
+from tastytrade.instruments import OptionChain
+
+# ----------------------------------------------------
+# CONFIGURATION
+# ----------------------------------------------------
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
+
+# Premium Target Constraint: Minimum percentage of spread width to collect (0.30 = 30%)
+MIN_PREMIUM_THRESHOLD_PCT = 0.30 
+
+USERNAME = "your_tastytrade_username"
+PASSWORD = "your_tastytrade_password"
+
+try:
+    session = ProductionSession(USERNAME, PASSWORD)
+    print("🔒 Tastytrade Session Authenticated Successfully.")
+except Exception as e:
+    print(f"❌ Login Failed: {e}")
+    exit()
+
+
+def send_telegram_alert(message):
+    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"❌ Error sending Telegram message: {e}")
+
+
+def is_earnings_within_30_days(ticker_symbol):
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        calendar = stock.calendar
+        if calendar is not None and 'Earnings Date' in calendar:
+            earnings_dates = calendar['Earnings Date']
+            if earnings_dates:
+                next_earnings = earnings_dates
+                now = datetime.now(timezone.utc) if next_earnings.tzinfo else datetime.now()
+                days_until_earnings = (next_earnings - now).days
+                if 0 <= days_until_earnings <= 30:
+                    return True, f"{days_until_earnings} days"
+    except Exception:
+        pass
+    return False, ""
+
+
+def analyze_market_regime(ticker_symbol):
+    has_earnings, earnings_window = is_earnings_within_30_days(ticker_symbol)
+    if has_earnings:
+        print(f"⏭️ SKIPPING {ticker_symbol}: Earnings coming up in {earnings_window}")
+        return
+
+    stock = yf.Ticker(ticker_symbol)
+    df = stock.history(period="1y", interval="1d")
+    if len(df) < 200:
+        return
+
+    df['SMA_50'] = ta.sma(df['Close'], length=50)
+    df['SMA_200'] = ta.sma(df['Close'], length=200)
+    stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=14, d=3, smooth_k=3)
+    df = pd.concat([df, stoch], axis=1)
+    
+    k_col = [c for c in df.columns if 'STOCHk' in c]
+    d_col = [c for c in df.columns if 'STOCHd' in c]
+
+    current = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    price = current['Close']
+    sma50, sma200 = current['SMA_50'], current['SMA_200']
+    k_today, d_today = current[k_col], current[d_col]
+    k_yesterday, d_yesterday = prev[k_col], prev[d_col]
+
+    metrics = get_market_metrics(session, [ticker_symbol])
+    iv_rank = float(metrics.implied_volatility_index_rank) * 100
+
+    is_bullish = price > sma50 > sma200
+    is_bearish = price < sma50 < sma200
+    is_neutral = (sma50 > price > sma200) or (sma200 > price > sma50) or (abs(sma50 - sma200) / sma200 < 0.02)
+
+    # Route triggers directly to calculations
+    if is_bullish and ((k_yesterday < 20 or d_yesterday < 20) and (k_yesterday <= d_yesterday and k_today > d_today)):
+        build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="BULL_PUT")
+            
+    elif is_bearish and ((k_yesterday > 80 or d_yesterday > 80) and (k_yesterday >= d_yesterday and k_today < d_today)):
+        build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="BEAR_CALL")
+            
+    elif is_neutral and iv_rank > 25:
+        build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="IRON_CONDOR")
+
+
+def build_and_filter_legs(ticker_symbol, current_price, iv_rank, strategy):
+    chain = OptionChain.get_chain(session, ticker_symbol)
+    today = datetime.today()
+    target_exp = min(chain.expirations, key=lambda e: abs((datetime.strptime(e.expiration_date, "%Y-%m-%d") - today).days - 38))
+
+    nested_chain = chain.get_nested_chain(session, target_exp.expiration_date)
+    options_list = []
+    
+    # 1. Gather strikes alongside their live bids and asks to derive real-time strategy mid-pricing
+    for strike in nested_chain.strikes:
+        strike_price = float(strike.strike_price)
+        
+        # Pull live greeks & quotes natively provided by Tastytrade objects
+        call_delta = float(strike.call.delta) if strike.call and strike.call.delta else 0.0
+        put_delta = abs(float(strike.put.delta)) if strike.put and strike.put.delta else 0.0
+        
+        call_mid = (float(strike.call.bid) + float(strike.call.ask)) / 2.0 if strike.call and strike.call.bid else 0.0
+        put_mid = (float(strike.put.bid) + float(strike.put.ask)) / 2.0 if strike.put and strike.put.bid else 0.0
+        
+        options_list.append({
+            'strike': strike_price,
+            'call_delta': call_delta,
+            'put_delta': put_delta,
+            'call_mid': call_mid,
+            'put_mid': put_mid
+        })
+        
+    df_chain = pd.DataFrame(options_list)
+    net_credit = 0.0
+    spread_width = 5.0 # Set standard default spread width boundary
+
+    # 2. Strategy Logic & Leg Selections
+    if strategy == "BULL_PUT":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - spread_width)].iloc
+        
+        # Net Credit for credit spreads = Short Option Premium Received - Long Option Premium Paid
+        net_credit = short_put['put_mid'] - long_put['put_mid']
+        
+    elif strategy == "BEAR_CALL":
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + spread_width)].iloc
+        
+        net_credit = short_call['call_mid'] - long_call['call_mid']
+
+    elif strategy == "IRON_CONDOR":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - spread_width)].iloc
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + spread_width)].iloc
+        
+        # Iron Condor total credit combines both credit wings
+        net_credit = (short_put['put_mid'] - long_put['put_mid']) + (short_call['call_mid'] - long_call['call_mid'])
+
+    # 🛑 THE RISK PROFILE FILTER: Check mathematical viability
+    required_min_credit = spread_width * MIN_PREMIUM_THRESHOLD_PCT
+    
+    if net_credit < required_min_credit:
+        print(f"❌ FILTERED OUT: {ticker_symbol} {strategy} premium (${net_credit:.2f}) does not meet minimum 30% width rule (${required_min_credit:.2f}).")
+        return
+
+    # 3. Assemble and Format message for verified high-probability setups
+    max_loss = (spread_width - net_credit) * 100
+    alert_msg = f"🎯 *TRADE SIGNAL: {strategy}*\n"
+    alert_msg += f"📈 *Asset:* {ticker_symbol} | *Price:* ${current_price:.2f}\n"
+    alert_msg += f"📊 *IV Rank:* {iv_rank:.1f} | *Exp:* {target_exp.expiration_date} ({target_exp.days_to_expiration} DTE)\n"
+    alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+
+    if strategy == "BULL_PUT":
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+    elif strategy == "BEAR_CALL":
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+    elif strategy == "IRON_CONDOR":
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+        alert_msg += f" ─── Wings ───\n"
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+
+    alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+    alert_msg += f"💰 *Net Credit Received:* ${net_credit:.2f} ($ {net_credit*100:.0f} Total)\n"
+    alert_msg += f"⚠️ *Max Defined Risk:* ${max_loss:.2f} per spread"
+
+    # Push verification message straight to phone
+    send_telegram_alert(alert_msg)
+
+# Execution
+watchlist = ["AAPL", "AMD", "MSFT", "NVDA", "SPY"]
+for asset in watchlist:
+    try:
+        analyze_market_regime(asset)
+    except Exception as err:
+        print(f"Error on {asset}: {err}")
+
+```
