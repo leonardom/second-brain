@@ -442,3 +442,73 @@ Running this script once a day, roughly 30 to 60 minutes before the market close
 # Example Cron Job: Runs the script Monday through Friday at 15:15 (3:15 PM) EST
 15 15 * * 1-5 /usr/bin/python3 /path/to/your/options_script.py
 ```
+
+
+> ### ⚠️ The One Exception
+>
+> Weekly Income ScannersIf your personal trading style shifts toward shorter-term trades (e.g., targeting weekly expirations that are only 7 to 14 Days to Expiration instead of 30-45 DTE), you can safely drop the timeframe down.If you choose to do this, change your charts to the 4-Hour Timeframe and change your trend filters from the 50/200 SMAs to the 20 SMA and 50 SMA. You can run the script twice a day: once at mid-day and once right before the close.
+
+
+# Skip Earnings
+
+Add the following method to check for Earnings
+
+```python
+def is_earnings_within_30_days(ticker_symbol):
+    """
+    Checks if the company has an upcoming earnings date scheduled within the next 30 days.
+    """
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        calendar = stock.calendar
+        
+        # If yfinance calendar data is available, check for the next earnings date
+        if calendar is not None and 'Earnings Date' in calendar:
+            earnings_dates = calendar['Earnings Date']
+            if earnings_dates:
+                # Target the next upcoming date from the list
+                next_earnings = earnings_dates[0]
+                
+                # Normalize datetimes to handle timezone-aware or naive structures cleanly
+                now = datetime.now(timezone.utc) if next_earnings.tzinfo else datetime.now()
+                days_until_earnings = (next_earnings - now).days
+                
+                # Check if it falls inside our high-risk 30-day window
+                if 0 <= days_until_earnings <= 30:
+                    print(f"⚠️ RISK DETECTED: {ticker_symbol} has earnings in {days_until_earnings} days ({next_earnings.strftime('%Y-%m-%d')}).")
+                    return True
+                elif days_until_earnings < 0:
+                    # Date passed or occurred earlier today
+                    return False
+                else:
+                    print(f"📅 Safe: Next earnings for {ticker_symbol} are in {days_until_earnings} days.")
+                    return False
+    except Exception as e:
+        # Fallback to parsing the general earnings_dates dataframe if calendar fails
+        try:
+            stock = yf.Ticker(ticker_symbol)
+            df_earnings = stock.get_earnings_dates(limit=1)
+            if df_earnings is not None and not df_earnings.empty:
+                next_earnings = df_earnings.index[0]
+                now = datetime.now(timezone.utc) if next_earnings.tzinfo else datetime.now()
+                days_until_earnings = (next_earnings - now).days
+                if 0 <= days_until_earnings <= 30:
+                    print(f"⚠️ RISK DETECTED: {ticker_symbol} has earnings in {days_until_earnings} days ({next_earnings.strftime('%Y-%m-%d')}).")
+                    return True
+        except Exception:
+            print(f"ℹ️ Could not resolve earnings date for {ticker_symbol}. Proceeding with caution.")
+    
+    return False
+```
+
+Update method `analyze_market_regime` to check for Earnings:
+
+```python
+def analyze_market_regime(ticker_symbol):
+    print(f"\n{"="*50}\n🔎 Scanning {ticker_symbol}...")
+    
+    # 🛑 NEW CRITICAL PROTECTION: The 30-day Catalyst Filter
+    if is_earnings_within_30_days(ticker_symbol):
+        print(f"⏭️ SKIPPING {ticker_symbol}: Avoid selling options premium right before a binary volatility event.")
+        return
+```
