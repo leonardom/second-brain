@@ -432,3 +432,13 @@ for asset in watchlist:
         print(f"⚠️ Error scanning {asset}: {err}")
 
 ```
+---
+
+# ⚙️ How to Automate Daily Execution
+
+Running this script once a day, roughly 30 to 60 minutes before the market closes (around 3:00 PM to 3:30 PM EST), is the absolute sweet spot for this specific strategy.
+
+```shell
+# Example Cron Job: Runs the script Monday through Friday at 15:15 (3:15 PM) EST
+15 15 * * 1-5 /usr/bin/python3 /path/to/your/options_script.py
+```
