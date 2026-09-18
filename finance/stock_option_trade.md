@@ -822,3 +822,250 @@ for asset in watchlist:
     except Exception as err:
         print(f"Error on {asset}: {err}")
 ```
+
+# 💻 Production Engine with Broad Market Filters
+
+To insulate your strategy from systematic market risk (where a broad market crash drags down even the best stocks), we can implement a Macro Market Regime Filter.
+
+Selling credit premium during a massive market correction is dangerous because correlations go to 1 and everything drops. We can prevent this by checking SPY and the VIX before scanning your watchlist:
+
+1. The SPY Downtrend Filter: If the S&P 500 (SPY) is trading below its own 200-day Simple Moving Average, the broader market is in a structural bear market. The script will completely shut down bullish trades.
+
+2. The VIX Panic Filter: If the Volatility Index (^VIX) breaks above 25, it indicates extreme market panic. During a volatility spike, asset prices drop too rapidly for traditional indicators to keep up. The script will halt all entries until the market calms down.
+
+```python
+import yfinance as yf
+import pandas as pd
+import pandas_ta as ta
+import requests
+from datetime import datetime, timedelta, timezone
+from tastytrade import ProductionSession
+from tastytrade.metrics import get_market_metrics
+from tastytrade.instruments import OptionChain
+
+# ----------------------------------------------------
+# CONFIGURATION
+# ----------------------------------------------------
+TELEGRAM_TOKEN = "YOUR_BOT_TOKEN_HERE"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID_HERE"
+
+MIN_PREMIUM_THRESHOLD_PCT = 0.30 
+VIX_PANIC_THRESHOLD = 25.0       # Halt trading if VIX goes above this level
+
+USERNAME = "your_tastytrade_username"
+PASSWORD = "your_tastytrade_password"
+
+try:
+    session = ProductionSession(USERNAME, PASSWORD)
+    print("🔒 Tastytrade Session Authenticated Successfully.")
+except Exception as e:
+    print(f"❌ Login Failed: {e}")
+    exit()
+
+
+def send_telegram_alert(message):
+    url = f"https://telegram.org{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}
+    try:
+        requests.post(url, json=payload)
+    except Exception as e:
+        print(f"❌ Error sending Telegram message: {e}")
+
+
+def check_macro_market_health():
+    """
+    Evaluates broad market risk via SPY and VIX.
+    Returns: (is_market_safe_for_bullish, market_status_string)
+    """
+    print("🌐 Checking Macro Market Health (SPY & VIX)...")
+    
+    # 1. Check VIX for Panic
+    vix = yf.Ticker("^VIX")
+    vix_history = vix.history(period="2d")
+    if vix_history.empty:
+        print("⚠️ Could not fetch VIX data. Proceeding cautiously.")
+        current_vix = 18.0
+    else:
+        current_vix = vix_history['Close'].iloc[-1]
+        
+    if current_vix >= VIX_PANIC_THRESHOLD:
+        return False, f"🚨 HIGH RISK: VIX is at {current_vix:.2f} (Panic Threshold: {VIX_PANIC_THRESHOLD}). Market environment is unstable."
+
+    # 2. Check SPY for Structural Trend
+    spy = yf.Ticker("SPY")
+    spy_df = spy.history(period="1y")
+    spy_df['SMA_200'] = ta.sma(spy_df['Close'], length=200)
+    
+    current_spy = spy_df['Close'].iloc[-1]
+    spy_sma200 = spy_df['SMA_200'].iloc[-1]
+    
+    if current_spy < spy_sma200:
+        return False, f"📉 BEAR MARKET: SPY (${current_spy:.2f}) is below its 200-day SMA (${spy_sma200:.2f}). Bullish spreads restricted."
+
+    return True, f"✅ MARKET SAFE: SPY is in an uptrend (${current_spy:.2f} > SMA200), and VIX is stable at {current_vix:.2f}."
+
+
+def is_earnings_within_30_days(ticker_symbol):
+    try:
+        stock = yf.Ticker(ticker_symbol)
+        calendar = stock.calendar
+        if calendar is not None and 'Earnings Date' in calendar:
+            earnings_dates = calendar['Earnings Date']
+            if earnings_dates:
+                next_earnings = earnings_dates
+                now = datetime.now(timezone.utc) if next_earnings.tzinfo else datetime.now()
+                days_until_earnings = (next_earnings - now).days
+                if 0 <= days_until_earnings <= 30:
+                    return True, f"{days_until_earnings} days"
+    except Exception:
+        pass
+    return False, ""
+
+
+def analyze_market_regime(ticker_symbol, macro_safe):
+    has_earnings, earnings_window = is_earnings_within_30_days(ticker_symbol)
+    if has_earnings:
+        print(f"⏭️ SKIPPING {ticker_symbol}: Earnings coming up in {earnings_window}")
+        return
+
+    stock = yf.Ticker(ticker_symbol)
+    df = stock.history(period="1y", interval="1d")
+    if len(df) < 200:
+        return
+
+    df['SMA_50'] = ta.sma(df['Close'], length=50)
+    df['SMA_200'] = ta.sma(df['Close'], length=200)
+    stoch = ta.stoch(df['High'], df['Low'], df['Close'], k=14, d=3, smooth_k=3)
+    df = pd.concat([df, stoch], axis=1)
+    
+    k_col = [c for c in df.columns if 'STOCHk' in c]
+    d_col = [c for c in df.columns if 'STOCHd' in c]
+
+    current = df.iloc[-1]
+    prev = df.iloc[-2]
+    
+    price = current['Close']
+    sma50, sma200 = current['SMA_50'], current['SMA_200']
+    k_today, d_today = current[k_col], current[d_col]
+    k_yesterday, d_yesterday = prev[k_col], prev[d_col]
+
+    metrics = get_market_metrics(session, [ticker_symbol])
+    iv_rank = float(metrics.implied_volatility_index_rank) * 100
+
+    is_bullish = price > sma50 > sma200
+    is_bearish = price < sma50 < sma200
+    is_neutral = (sma50 > price > sma200) or (sma200 > price > sma50) or (abs(sma50 - sma200) / sma200 < 0.02)
+
+    # 🛡️ Apply Macro Filter Routing Restrictions
+    if is_bullish and ((k_yesterday < 20 or d_yesterday < 20) and (k_yesterday <= d_yesterday and k_today > d_today)):
+        if macro_safe:
+            build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="BULL_PUT")
+        else:
+            print(f"🛑 TRIGGER BLOCKED for {ticker_symbol}: Stochastic crossover is bullish, but macro filters have blocked long entry deployment.")
+            
+    elif is_bearish and ((k_yesterday > 80 or d_yesterday > 80) and (k_yesterday >= d_yesterday and k_today < d_today)):
+        # Bearish spreads are safer when the macro environment is down, or we can deploy them selectively.
+        build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="BEAR_CALL")
+            
+    elif is_neutral and iv_rank > 25:
+        if macro_safe:
+            build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="IRON_CONDOR")
+        else:
+            print(f"🛑 TRIGGER BLOCKED for {ticker_symbol}: Range trade ignored due to high market-wide volatility.")
+
+
+def build_and_filter_legs(ticker_symbol, current_price, iv_rank, strategy):
+    chain = OptionChain.get_chain(session, ticker_symbol)
+    today = datetime.today()
+    target_exp = min(chain.expirations, key=lambda e: abs((datetime.strptime(e.expiration_date, "%Y-%m-%d") - today).days - 38))
+
+    nested_chain = chain.get_nested_chain(session, target_exp.expiration_date)
+    options_list = []
+    
+    if current_price < 200.0:
+        spread_width = 5.0
+    else:
+        spread_width = 10.0
+
+    for strike in nested_chain.strikes:
+        strike_price = float(strike.strike_price)
+        call_delta = float(strike.call.delta) if strike.call and strike.call.delta else 0.0
+        put_delta = abs(float(strike.put.delta)) if strike.put and strike.put.delta else 0.0
+        
+        call_mid = (float(strike.call.bid) + float(strike.call.ask)) / 2.0 if strike.call and strike.call.bid else 0.0
+        put_mid = (float(strike.put.bid) + float(strike.put.ask)) / 2.0 if strike.put and strike.put.bid else 0.0
+        
+        options_list.append({
+            'strike': strike_price, 'call_delta': call_delta, 'put_delta': put_delta,
+            'call_mid': call_mid, 'put_mid': put_mid
+        })
+        
+    df_chain = pd.DataFrame(options_list)
+    net_credit = 0.0
+
+    if strategy == "BULL_PUT":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_put_target = short_put['strike'] - spread_width
+        long_put_matches = df_chain[df_chain['strike'] == long_put_target]
+        if long_put_matches.empty: return
+        long_put = long_put_matches.iloc
+        net_credit = short_put['put_mid'] - long_put['put_mid']
+        
+    elif strategy == "BEAR_CALL":
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_call_target = short_call['strike'] + spread_width
+        long_call_matches = df_chain[df_chain['strike'] == long_call_target]
+        if long_call_matches.empty: return
+        long_call = long_call_matches.iloc
+        net_credit = short_call['call_mid'] - long_call['call_mid']
+
+    elif strategy == "IRON_CONDOR":
+        short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - spread_width)].iloc
+        short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
+        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + spread_width)].iloc
+        
+        net_credit = (short_put['put_mid'] - long_put['put_mid']) + (short_call['call_mid'] - long_call['call_mid'])
+
+    required_min_credit = spread_width * MIN_PREMIUM_THRESHOLD_PCT
+    if net_credit < required_min_credit:
+        return
+
+    max_loss = (spread_width - net_credit) * 100
+    alert_msg = f"🎯 *TRADE SIGNAL: {strategy}*\n"
+    alert_msg += f"📈 *Asset:* {ticker_symbol} | *Price:* ${current_price:.2f} (Width: ${spread_width:.0f})\n"
+    alert_msg += f"📊 *IV Rank:* {iv_rank:.1f} | *Exp:* {target_exp.expiration_date} ({target_exp.days_to_expiration} DTE)\n"
+    alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+
+    if strategy == "BULL_PUT":
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+    elif strategy == "BEAR_CALL":
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+    elif strategy == "IRON_CONDOR":
+        alert_msg += f"🟢 *SELL:* ${short_call['strike']} Call (Δ {short_call['call_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_call['strike']} Call (Δ {long_call['call_delta']:.2f})\n"
+        alert_msg += f" ─── Wings ───\n"
+        alert_msg += f"🟢 *SELL:* ${short_put['strike']} Put (Δ {short_put['put_delta']:.2f})\n"
+        alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
+
+    alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
+    alert_msg += f"💰 *Net Credit Received:* ${net_credit:.2f} (${net_credit*100:.0f} Total)\n"
+    alert_msg += f"⚠️ *Max Defined Risk:* ${max_loss:.2f} per spread"
+
+    send_telegram_alert(alert_msg)
+
+
+# Execution List (Varying prices to trigger distinct logic thresholds)
+macro_market_safe, status_report = check_macro_market_health()
+print(status_report)
+
+watchlist = ["AMD", "AAPL", "MSFT", "NVDA", "SPY"]
+
+for asset in watchlist:
+    try:
+        analyze_market_regime(asset, macro_safe=macro_market_safe)
+    except Exception as err:
+        print(f"Error on {asset}: {err}")
+```
