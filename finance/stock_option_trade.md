@@ -702,7 +702,7 @@ def analyze_market_regime(ticker_symbol):
     is_bearish = price < sma50 < sma200
     is_neutral = (sma50 > price > sma200) or (sma200 > price > sma50) or (abs(sma50 - sma200) / sma200 < 0.02)
 
-    # Route triggers directly to calculations
+    # Trigger Routing
     if is_bullish and ((k_yesterday < 20 or d_yesterday < 20) and (k_yesterday <= d_yesterday and k_today > d_today)):
         build_and_filter_legs(ticker_symbol, price, iv_rank, strategy="BULL_PUT")
             
@@ -721,11 +721,17 @@ def build_and_filter_legs(ticker_symbol, current_price, iv_rank, strategy):
     nested_chain = chain.get_nested_chain(session, target_exp.expiration_date)
     options_list = []
     
-    # 1. Gather strikes alongside their live bids and asks to derive real-time strategy mid-pricing
+    # ⚙️ NEW: Dynamic Spread Width Scaling Engine
+    if current_price < 200.0:
+        spread_width = 5.0
+    else:
+        spread_width = 10.0
+        
+    print(f"   📐 Price scaling active: Using ${spread_width:.0f}-wide spread wings.")
+
+    # Gather chain data
     for strike in nested_chain.strikes:
         strike_price = float(strike.strike_price)
-        
-        # Pull live greeks & quotes natively provided by Tastytrade objects
         call_delta = float(strike.call.delta) if strike.call and strike.call.delta else 0.0
         put_delta = abs(float(strike.put.delta)) if strike.put and strike.put.delta else 0.0
         
@@ -742,42 +748,50 @@ def build_and_filter_legs(ticker_symbol, current_price, iv_rank, strategy):
         
     df_chain = pd.DataFrame(options_list)
     net_credit = 0.0
-    spread_width = 5.0 # Set standard default spread width boundary
 
-    # 2. Strategy Logic & Leg Selections
+    # Locate and map options wings using dynamic scaling
     if strategy == "BULL_PUT":
         short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
-        long_put = df_chain[df_chain['strike'] == (short_put['strike'] - spread_width)].iloc
         
-        # Net Credit for credit spreads = Short Option Premium Received - Long Option Premium Paid
+        # Pull defensive protection based on the dynamic target strike assignment
+        long_put_target = short_put['strike'] - spread_width
+        long_put_matches = df_chain[df_chain['strike'] == long_put_target]
+        if long_put_matches.empty:
+            print(f"⚠️ Error: No exact protective strike available for target ${long_put_target}.")
+            return
+        long_put = long_put_matches.iloc
         net_credit = short_put['put_mid'] - long_put['put_mid']
         
     elif strategy == "BEAR_CALL":
         short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
-        long_call = df_chain[df_chain['strike'] == (short_call['strike'] + spread_width)].iloc
         
+        long_call_target = short_call['strike'] + spread_width
+        long_call_matches = df_chain[df_chain['strike'] == long_call_target]
+        if long_call_matches.empty:
+            print(f"⚠️ Error: No exact protective strike available for target ${long_call_target}.")
+            return
+        long_call = long_call_matches.iloc
         net_credit = short_call['call_mid'] - long_call['call_mid']
 
     elif strategy == "IRON_CONDOR":
         short_put = df_chain[df_chain['strike'] < current_price].iloc[(df_chain['put_delta'] - 0.15).abs().argsort()[:1]].iloc
         long_put = df_chain[df_chain['strike'] == (short_put['strike'] - spread_width)].iloc
+        
         short_call = df_chain[df_chain['strike'] > current_price].iloc[(df_chain['call_delta'] - 0.15).abs().argsort()[:1]].iloc
         long_call = df_chain[df_chain['strike'] == (short_call['strike'] + spread_width)].iloc
         
-        # Iron Condor total credit combines both credit wings
         net_credit = (short_put['put_mid'] - long_put['put_mid']) + (short_call['call_mid'] - long_call['call_mid'])
 
-    # 🛑 THE RISK PROFILE FILTER: Check mathematical viability
+    # Validate math parameters via risk matrix threshold requirements
     required_min_credit = spread_width * MIN_PREMIUM_THRESHOLD_PCT
-    
     if net_credit < required_min_credit:
-        print(f"❌ FILTERED OUT: {ticker_symbol} {strategy} premium (${net_credit:.2f}) does not meet minimum 30% width rule (${required_min_credit:.2f}).")
+        print(f"❌ FILTERED OUT: {ticker_symbol} {strategy} premium (${net_credit:.2f}) fails {MIN_PREMIUM_THRESHOLD_PCT*100:.0f}% width requirement (${required_min_credit:.2f}).")
         return
 
-    # 3. Assemble and Format message for verified high-probability setups
+    # Frame and dispatch final parameters
     max_loss = (spread_width - net_credit) * 100
     alert_msg = f"🎯 *TRADE SIGNAL: {strategy}*\n"
-    alert_msg += f"📈 *Asset:* {ticker_symbol} | *Price:* ${current_price:.2f}\n"
+    alert_msg += f"📈 *Asset:* {ticker_symbol} | *Price:* ${current_price:.2f} (Width: ${spread_width:.0f})\n"
     alert_msg += f"📊 *IV Rank:* {iv_rank:.1f} | *Exp:* {target_exp.expiration_date} ({target_exp.days_to_expiration} DTE)\n"
     alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
 
@@ -795,18 +809,16 @@ def build_and_filter_legs(ticker_symbol, current_price, iv_rank, strategy):
         alert_msg += f"🔴 *BUY:* ${long_put['strike']} Put (Δ {long_put['put_delta']:.2f})\n"
 
     alert_msg += f"━━━━━━━━━━━━━━━━━━━━\n"
-    alert_msg += f"💰 *Net Credit Received:* ${net_credit:.2f} ($ {net_credit*100:.0f} Total)\n"
+    alert_msg += f"💰 *Net Credit Received:* ${net_credit:.2f} (${net_credit*100:.0f} Total)\n"
     alert_msg += f"⚠️ *Max Defined Risk:* ${max_loss:.2f} per spread"
 
-    # Push verification message straight to phone
     send_telegram_alert(alert_msg)
 
-# Execution
-watchlist = ["AAPL", "AMD", "MSFT", "NVDA", "SPY"]
+# Execution List (Varying prices to trigger distinct logic thresholds)
+watchlist = ["AMD", "AAPL", "MSFT", "NVDA", "SPY"]
 for asset in watchlist:
     try:
         analyze_market_regime(asset)
     except Exception as err:
         print(f"Error on {asset}: {err}")
-
 ```
